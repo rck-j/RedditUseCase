@@ -124,10 +124,50 @@ def _parse_as_model(
     )
     if isinstance(response, text_format):
         return response
-    parsed_payload = getattr(response, "parsed", response)
+
+    parsed_payload = getattr(response, "parsed", None)
     if isinstance(parsed_payload, text_format):
         return parsed_payload
-    return text_format.model_validate(parsed_payload)
+    if parsed_payload is not None:
+        return text_format.model_validate(parsed_payload)
+
+    output_parsed = getattr(response, "output_parsed", None)
+    if isinstance(output_parsed, text_format):
+        return output_parsed
+    if output_parsed is not None:
+        return text_format.model_validate(output_parsed)
+
+    output_items = getattr(response, "output", None)
+    if output_items is not None:
+        for item in output_items:
+            content_list = getattr(item, "content", None)
+            if content_list is None:
+                continue
+            for content in content_list:
+                parsed_value = getattr(content, "parsed", None)
+                if isinstance(parsed_value, text_format):
+                    return parsed_value
+                if parsed_value is not None:
+                    return text_format.model_validate(parsed_value)
+    if hasattr(response, "model_dump"):
+        dumped = response.model_dump()
+        if isinstance(dumped, dict):
+            try:
+                return text_format.model_validate(dumped)
+            except ValidationError:
+                pass
+
+    raise ValidationError(
+        [
+            {
+                "type": "model_parsing",
+                "loc": (text_format.__name__,),
+                "msg": "Unable to locate parsed content in OpenAI response.",
+                "input": response,
+            }
+        ],
+        model=text_format,
+    )
 
 
 def _truncate(text: str, limit: int) -> str:
