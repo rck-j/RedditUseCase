@@ -485,6 +485,7 @@ def main() -> None:
 
     generated_at = datetime.now(timezone.utc).isoformat()
     results: List[PostReport] = []
+    print("Streaming Reddit results and updating report incrementally...")
     for post_summary in search_posts(
         reddit_client,
         subreddits=args.subs,
@@ -497,18 +498,20 @@ def main() -> None:
         )
         results.append(report)
         _print_report_entry(report)
+        write_report(
+            args.report_path,
+            generated_at=generated_at,
+            query=args.query,
+            time_filter=args.time_filter,
+            posts=results,
+        )
+        print(
+            f"Report updated ({len(results)} entries) -> {args.report_path}"
+        )
 
-    print(f"Processed {len(results)} posts.")
-    write_report(
-        args.report_path,
-        generated_at=generated_at,
-        query=args.query,
-        time_filter=args.time_filter,
-        posts=results,
-    )
-    print(f"Report saved to {args.report_path}")
+    print(f"Processed {len(results)} posts total.")
+    print(f"Final report available at {args.report_path}")
 
 
 if __name__ == "__main__":
     main()
-
