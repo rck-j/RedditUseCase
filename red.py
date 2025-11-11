@@ -138,7 +138,7 @@ def analyze_full_post_use_case(full_post: Dict[str, Any]) -> AutomationInsight:
             model=OPENAI_MODEL,
             input=[{"role": "user", "content": combined_input}],
             max_output_tokens=350,
-            response_format=AutomationInsight,
+            text_format=AutomationInsight,
         )
         if isinstance(parsed, AutomationInsight):
             return parsed
