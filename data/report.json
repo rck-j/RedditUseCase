@@ -1,8 +1,8 @@
 {
-  "generated_at": "2025-11-11T19:03:25.500789+00:00",
+  "generated_at": "2025-11-11T19:53:47.304129+00:00",
   "query": "(agent OR \"ai agent\" OR agentic OR automation) (small business OR smb OR entrepreneur)",
   "time_filter": "month",
-  "total_posts": 7,
+  "total_posts": 4,
   "posts": [
     {
       "subreddit": "smallbusiness",
@@ -10,10 +10,10 @@
       "url": "https://www.reddit.com/r/smallbusiness/comments/1ouf027/do_you_think_automations_are_overrated_for_small/",
       "created_utc": 1762880790.0,
       "score": 0,
-      "num_comments": 13,
+      "num_comments": 14,
       "created": "2025-11-11 17:06:30",
-      "automation_summary": "Deep assessment unavailable.",
-      "deep_analysis": "OpenAI error: Responses.parse() got an unexpected keyword argument 'response_format'",
+      "automation_summary": "Deep assessment failed to parse response.",
+      "deep_analysis": "Parsing error: 1 validation error for AutomationInsight\n  Input should be a valid dictionary or instance of AutomationInsight [type=model_type, input_value=ParsedResponse[Automation...ention=None, store=True), input_type=ParsedResponse[AutomationInsight]]\n    For further information visit https://errors.pydantic.dev/2.12/v/model_type",
       "automation_complexity": "unknown",
       "required_tools": []
     },
@@ -25,7 +25,7 @@
       "score": 1,
       "num_comments": 1,
       "created": "2025-11-11 14:12:20",
-      "automation_summary": "NO - The post focuses on sharing insights about launching an online casino or sportsbook, which is a very niche and heavily regulated industry that may not directly imply broader automation opportunities for small businesses or entrepreneurs.",
+      "automation_summary": "NO - The post primarily seeks to share insights about launching an online casino or sportsbook, which may not directly indicate a specific automation opportunity for a small business or entrepreneur.",
       "deep_analysis": "Not assessed (initial review not affirmative)",
       "automation_complexity": "unknown",
       "required_tools": []
@@ -38,8 +38,8 @@
       "score": 0,
       "num_comments": 11,
       "created": "2025-11-11 11:06:45",
-      "automation_summary": "Deep assessment unavailable.",
-      "deep_analysis": "OpenAI error: Responses.parse() got an unexpected keyword argument 'response_format'",
+      "automation_summary": "Deep assessment failed to parse response.",
+      "deep_analysis": "Parsing error: 1 validation error for AutomationInsight\n  Input should be a valid dictionary or instance of AutomationInsight [type=model_type, input_value=ParsedResponse[Automation...ention=None, store=True), input_type=ParsedResponse[AutomationInsight]]\n    For further information visit https://errors.pydantic.dev/2.12/v/model_type",
       "automation_complexity": "unknown",
       "required_tools": []
     },
@@ -51,47 +51,8 @@
       "score": 0,
       "num_comments": 9,
       "created": "2025-11-11 01:09:44",
-      "automation_summary": "Deep assessment unavailable.",
-      "deep_analysis": "OpenAI error: Responses.parse() got an unexpected keyword argument 'response_format'",
-      "automation_complexity": "unknown",
-      "required_tools": []
-    },
-    {
-      "subreddit": "smallbusiness",
-      "title": "How We\u2019ve Been Improving Our Social Media Ads (Looking for Advice)",
-      "url": "https://www.reddit.com/r/smallbusiness/comments/1oths5g/how_weve_been_improving_our_social_media_ads/",
-      "created_utc": 1762790836.0,
-      "score": 2,
-      "num_comments": 9,
-      "created": "2025-11-10 16:07:16",
-      "automation_summary": "Deep assessment unavailable.",
-      "deep_analysis": "OpenAI error: Responses.parse() got an unexpected keyword argument 'response_format'",
-      "automation_complexity": "unknown",
-      "required_tools": []
-    },
-    {
-      "subreddit": "smallbusiness",
-      "title": "Anyone else drowning in leads but can\u2019t reply fast enough?",
-      "url": "https://www.reddit.com/r/smallbusiness/comments/1oth6eq/anyone_else_drowning_in_leads_but_cant_reply_fast/",
-      "created_utc": 1762789490.0,
-      "score": 0,
-      "num_comments": 9,
-      "created": "2025-11-10 15:44:50",
-      "automation_summary": "Deep assessment unavailable.",
-      "deep_analysis": "OpenAI error: Responses.parse() got an unexpected keyword argument 'response_format'",
-      "automation_complexity": "unknown",
-      "required_tools": []
-    },
-    {
-      "subreddit": "smallbusiness",
-      "title": "If you could automate one task in your daily work, what would it be?",
-      "url": "https://www.reddit.com/r/smallbusiness/comments/1ot6wtx/if_you_could_automate_one_task_in_your_daily_work/",
-      "created_utc": 1762757278.0,
-      "score": 0,
-      "num_comments": 6,
-      "created": "2025-11-10 06:47:58",
-      "automation_summary": "Deep assessment unavailable.",
-      "deep_analysis": "OpenAI error: Responses.parse() got an unexpected keyword argument 'response_format'",
+      "automation_summary": "Deep assessment failed to parse response.",
+      "deep_analysis": "Parsing error: 1 validation error for AutomationInsight\n  Input should be a valid dictionary or instance of AutomationInsight [type=model_type, input_value=ParsedResponse[Automation...ention=None, store=True), input_type=ParsedResponse[AutomationInsight]]\n    For further information visit https://errors.pydantic.dev/2.12/v/model_type",
       "automation_complexity": "unknown",
       "required_tools": []
     }
