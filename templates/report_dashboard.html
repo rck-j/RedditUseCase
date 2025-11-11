@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Reddit Automation Report Dashboard</title>
+    <script src="https://unpkg.com/htmx.org@1.9.12"></script>
+    <style>
+      :root {
+        color-scheme: light dark;
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background-color: #f5f5f5;
+      }
+
+      body {
+        margin: 0;
+        padding: 2rem;
+      }
+
+      h1 {
+        margin-top: 0;
+      }
+
+      .filters {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 1rem;
+        margin-bottom: 1.5rem;
+        align-items: center;
+      }
+
+      .filters label {
+        font-weight: 600;
+        display: block;
+        margin-bottom: 0.25rem;
+      }
+
+      .filter-group {
+        display: flex;
+        flex-direction: column;
+      }
+
+      .filter-chips {
+        display: flex;
+        gap: 0.5rem;
+        align-items: center;
+      }
+
+      .chip {
+        border: 1px solid #888;
+        border-radius: 999px;
+        padding: 0.35rem 0.9rem;
+        background-color: white;
+        cursor: pointer;
+        transition: background-color 0.2s ease, color 0.2s ease, border-color 0.2s ease;
+      }
+
+      .chip.active {
+        background-color: #2563eb;
+        border-color: #2563eb;
+        color: white;
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        background-color: white;
+        box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1);
+      }
+
+      th,
+      td {
+        padding: 0.75rem 1rem;
+        border-bottom: 1px solid #e2e8f0;
+        vertical-align: top;
+        text-align: left;
+      }
+
+      th {
+        background-color: #f8fafc;
+        font-size: 0.95rem;
+      }
+
+      tbody tr:hover {
+        background-color: #f1f5f9;
+      }
+
+      details {
+        margin-top: 0.25rem;
+      }
+
+      .empty-state {
+        text-align: center;
+        padding: 2rem;
+        color: #64748b;
+      }
+
+      @media (max-width: 960px) {
+        table {
+          font-size: 0.9rem;
+        }
+
+        th,
+        td {
+          padding: 0.5rem 0.75rem;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Reddit Automation Report Dashboard</h1>
+      <section class="filters">
+        <div class="filter-group">
+          <label for="subreddit-filter">Subreddit</label>
+          <select id="subreddit-filter">
+            <option value="all">All</option>
+          </select>
+        </div>
+        <div class="filter-group">
+          <label for="complexity-filter">Automation Complexity</label>
+          <select id="complexity-filter">
+            <option value="all">All</option>
+          </select>
+        </div>
+        <div class="filter-group">
+          <label for="search-filter">Title Search</label>
+          <input
+            id="search-filter"
+            type="search"
+            placeholder="Search titles..."
+            autocomplete="off"
+          />
+        </div>
+        <div class="filter-group">
+          <label>Automation Assessment</label>
+          <div class="filter-chips" id="automation-chips">
+            <button class="chip active" data-value="any" type="button">All</button>
+            <button class="chip" data-value="true" type="button">Automation</button>
+            <button class="chip" data-value="false" type="button">Non-automation</button>
+          </div>
+        </div>
+      </section>
+
+      <table id="report-table" aria-live="polite">
+        <thead>
+          <tr>
+            <th scope="col">Subreddit</th>
+            <th scope="col">Title</th>
+            <th scope="col">Score</th>
+            <th scope="col">Comments</th>
+            <th scope="col">Automation Complexity</th>
+            <th scope="col">Required Tools</th>
+            <th scope="col">Details</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </main>
+
+    <div
+      id="report-loader"
+      hx-get="/api/reports"
+      hx-trigger="load"
+      hx-target="#report-loader"
+      hx-swap="none"
+    ></div>
+
+    <script>
+      const state = {
+        subreddit: "all",
+        complexity: "all",
+        search: "",
+        automation: "any",
+      };
+
+      let reports = [];
+
+      function escapeHtml(value) {
+        const text = String(value ?? "");
+        return text
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;")
+          .replace(/'/g, "&#39;");
+      }
+
+      function uniqueValues(items, selector) {
+        const set = new Set();
+        for (const item of items) {
+          const value = selector(item);
+          if (value) {
+            set.add(value);
+          }
+        }
+        return Array.from(set).sort((a, b) => a.localeCompare(b));
+      }
+
+      function populateSelect(select, values) {
+        const current = select.value;
+        select.innerHTML = "";
+        const defaultOption = document.createElement("option");
+        defaultOption.value = "all";
+        defaultOption.textContent = "All";
+        select.appendChild(defaultOption);
+        for (const value of values) {
+          const option = document.createElement("option");
+          option.value = value;
+          option.textContent = value;
+          select.appendChild(option);
+        }
+        if (values.includes(current)) {
+          select.value = current;
+        }
+      }
+
+      function applyFilters(item) {
+        if (state.subreddit !== "all" && item.subreddit !== state.subreddit) {
+          return false;
+        }
+        const complexity = item.automation_insight?.automation_complexity || "";
+        if (state.complexity !== "all" && complexity !== state.complexity) {
+          return false;
+        }
+        if (state.automation !== "any") {
+          const isAutomation = Boolean(item.initial_assessment?.is_automation);
+          if (String(isAutomation) !== state.automation) {
+            return false;
+          }
+        }
+        if (state.search) {
+          const title = item.title || "";
+          if (!title.toLowerCase().includes(state.search)) {
+            return false;
+          }
+        }
+        return true;
+      }
+
+      function formatTools(tools) {
+        if (!Array.isArray(tools) || tools.length === 0) {
+          return "—";
+        }
+        return tools.join(", ");
+      }
+
+      function renderTable() {
+        const tbody = document.querySelector("#report-table tbody");
+        tbody.innerHTML = "";
+        const filtered = reports.filter(applyFilters);
+
+        if (filtered.length === 0) {
+          const row = document.createElement("tr");
+          const cell = document.createElement("td");
+          cell.colSpan = 7;
+          cell.className = "empty-state";
+          cell.textContent = "No reports match the selected filters.";
+          row.appendChild(cell);
+          tbody.appendChild(row);
+          return;
+        }
+
+        for (const report of filtered) {
+          const row = document.createElement("tr");
+          const requiredTools = formatTools(report.automation_insight?.required_tools);
+          const rationale = report.initial_assessment?.rationale || "Not provided.";
+          const deepAnalysis =
+            report.automation_insight?.deep_analysis || "No deep analysis available.";
+          const safeUrl = report.url ? escapeHtml(report.url) : "#";
+
+          row.innerHTML = `
+            <td>${escapeHtml(report.subreddit)}</td>
+            <td>
+              <a href="${safeUrl}" target="_blank" rel="noopener noreferrer">
+                ${escapeHtml(report.title)}
+              </a>
+            </td>
+            <td>${report.score}</td>
+            <td>${report.num_comments}</td>
+            <td>${escapeHtml(report.automation_insight?.automation_complexity || "")}</td>
+            <td>${escapeHtml(requiredTools)}</td>
+            <td>
+              <details>
+                <summary>Insights</summary>
+                <div><strong>Initial Assessment:</strong> ${escapeHtml(rationale)}</div>
+                <div style="margin-top: 0.5rem;"><strong>Deep Analysis:</strong> ${escapeHtml(
+                  deepAnalysis
+                )}</div>
+              </details>
+            </td>
+          `;
+          tbody.appendChild(row);
+        }
+      }
+
+      function initializeFilters() {
+        const subredditFilter = document.getElementById("subreddit-filter");
+        const complexityFilter = document.getElementById("complexity-filter");
+        const searchFilter = document.getElementById("search-filter");
+        const automationChips = document.querySelectorAll("#automation-chips .chip");
+
+        populateSelect(
+          subredditFilter,
+          uniqueValues(reports, (item) => item.subreddit)
+        );
+        populateSelect(
+          complexityFilter,
+          uniqueValues(
+            reports,
+            (item) => item.automation_insight?.automation_complexity || ""
+          ).filter(Boolean)
+        );
+
+        subredditFilter.addEventListener("change", (event) => {
+          state.subreddit = event.target.value;
+          renderTable();
+        });
+        complexityFilter.addEventListener("change", (event) => {
+          state.complexity = event.target.value;
+          renderTable();
+        });
+        searchFilter.addEventListener("input", (event) => {
+          state.search = event.target.value.trim().toLowerCase();
+          renderTable();
+        });
+        automationChips.forEach((chip) => {
+          chip.addEventListener("click", () => {
+            automationChips.forEach((c) => c.classList.remove("active"));
+            chip.classList.add("active");
+            state.automation = chip.dataset.value;
+            renderTable();
+          });
+        });
+      }
+
+      document.addEventListener("htmx:afterRequest", (event) => {
+        if (event.target.id !== "report-loader") {
+          return;
+        }
+        const responseText = event.detail?.xhr?.responseText;
+        if (!responseText) {
+          return;
+        }
+        try {
+          reports = JSON.parse(responseText);
+        } catch (error) {
+          console.error("Failed to parse report payload", error);
+          return;
+        }
+        initializeFilters();
+        renderTable();
+      });
+    </script>
+  </body>
+</html>
