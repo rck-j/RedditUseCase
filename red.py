@@ -74,16 +74,6 @@ class AutomationInsight(BaseModel):
     required_tools: List[str] = Field(default_factory=list)
 
 
-STRUCTURED_RESPONSE_FORMAT = {
-    "type": "json_schema",
-    "json_schema": {
-        "name": "automation_insight",
-        "schema": AutomationInsight.model_json_schema(),
-        "strict": True,
-    },
-}
-
-
 def _responses_parse(**kwargs):
     """Wrapper that ensures the OpenAI client exposes responses.parse."""
     parse_method = getattr(openai_client.responses, "parse", None)
@@ -144,16 +134,19 @@ def analyze_full_post_use_case(full_post: Dict[str, Any]) -> AutomationInsight:
         f"Top Comments:\n{comments_section}"
     )
     try:
-        response = _responses_parse(
+        parsed = _responses_parse(
             model=OPENAI_MODEL,
             input=[{"role": "user", "content": combined_input}],
             max_output_tokens=350,
-            response_format=STRUCTURED_RESPONSE_FORMAT,
+            response_format=AutomationInsight,
         )
-        raw = response.output[0].content[0].text.strip()
-        payload = json.loads(raw)
-        return AutomationInsight.model_validate(payload)
-    except (json.JSONDecodeError, ValidationError) as exc:
+        if isinstance(parsed, AutomationInsight):
+            return parsed
+        parsed_payload = getattr(parsed, "parsed", parsed)
+        if isinstance(parsed_payload, AutomationInsight):
+            return parsed_payload
+        return AutomationInsight.model_validate(parsed_payload)
+    except ValidationError as exc:
         return AutomationInsight(
             automation_summary="Deep assessment failed to parse response.",
             deep_analysis=f"Parsing error: {exc}",
