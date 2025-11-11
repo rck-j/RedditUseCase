@@ -1,13 +1,36 @@
+"""Reddit automation opportunity analyzer."""
+
+from __future__ import annotations
+
+import argparse
 import json
 import os
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import (
+    Any,
+    Dict,
+    Iterable,
+    Iterator,
+    List,
+    Sequence,
+    Tuple,
+    Type,
+    TypeVar,
+)
 
 import praw
 from dotenv import load_dotenv
 from openai import OpenAI
 from pydantic import BaseModel, Field, ValidationError
+
+
+load_dotenv()
+
+
+DEFAULT_OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+PROMPTS_PATH = Path("config/prompts.json")
 
 
 def _require_env(key: str) -> str:
@@ -17,273 +40,478 @@ def _require_env(key: str) -> str:
     return value
 
 
-load_dotenv()
-
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-PROMPTS_PATH = Path("config/prompts.json")
-DEFAULT_PROMPTS = {
-    "initial_assessment": (
-        "You are an automation strategist. Review the Reddit post details and "
-        "decide if it hints at a potential automation use case for a small "
-        "business or entrepreneur. Respond with 'YES - <short rationale>' or "
-        "'NO - <short rationale>'."
-    ),
-    "deep_assessment": (
-        "You now have the full Reddit submission (post body plus sampled comments). "
-        "Assess whether a meaningful automation could help the author or community. "
-        "Focus on friction, repetition, or coordination gaps and evaluate with the "
-        "Move, Minimally ethos so computers do the work. Populate the structured "
-        "fields as follows: automation_summary (one sentence verdict), deep_analysis "
-        "(2-3 sentences with details), automation_complexity (one of: low, medium, "
-        "high), and required_tools (list of concrete tools, APIs, or agent skills "
-        "needed)."
-    ),
-}
-
-reddit = praw.Reddit(
-    client_id=_require_env("PRAW_CLIENT_ID"),
-    client_secret=_require_env("PRAW_CLIENT_SECRET"),
-    user_agent=_require_env("PRAW_USER_AGENT"),
-)
-openai_client = OpenAI(api_key=_require_env("OPENAI_API_KEY"))
-
-
 def _load_prompts(path: Path) -> Dict[str, str]:
-    """Load prompts from JSON, layering on top of defaults."""
-    prompts = DEFAULT_PROMPTS.copy()
+    defaults = {
+        "initial_assessment": (
+            "You are an automation strategist supporting small businesses and "
+            "entrepreneurs. Review the Reddit post details and decide whether it "
+            "indicates a meaningful automation or agent opportunity. Return a "
+            "binary decision and a short explanation."
+        ),
+        "deep_assessment": (
+            "You now have the full Reddit submission (post body plus sampled "
+            "comments). Assess whether an automation or agent solution could "
+            "meaningfully help the author or community. Focus on friction, "
+            "repetition, coordination gaps, and the Move, Minimally ethos so "
+            "computers do the heavy lifting."
+        ),
+    }
+
     try:
-        with path.open("r", encoding="utf-8") as fp:
-            data = json.load(fp)
-        for key, value in data.items():
-            if isinstance(value, str) and key in prompts:
-                prompts[key] = value
+        with path.open("r", encoding="utf-8") as handle:
+            overrides = json.load(handle)
     except FileNotFoundError:
-        pass
+        return defaults
     except json.JSONDecodeError as exc:
         print(f"Warning: could not parse prompts file ({exc}); using defaults.")
-    return prompts
+        return defaults
+
+    for key, value in overrides.items():
+        if isinstance(value, str) and key in defaults:
+            defaults[key] = value
+    return defaults
 
 
 PROMPTS = _load_prompts(PROMPTS_PATH)
 
 
+class InitialAssessment(BaseModel):
+    """Structured output for the initial title-only screen."""
+
+    is_automation: bool = Field(
+        ...,
+        description=(
+            "True when the post likely relates to an automation or agent use "
+            "case that merits deeper analysis."
+        ),
+    )
+    rationale: str = Field(..., description="Brief justification for the decision.")
+
+
 class AutomationInsight(BaseModel):
+    """Structured output for the full deep-dive analysis."""
+
     automation_summary: str
     deep_analysis: str
     automation_complexity: str
     required_tools: List[str] = Field(default_factory=list)
 
 
-def _responses_parse(**kwargs):
-    """Wrapper that ensures the OpenAI client exposes responses.parse."""
-    parse_method = getattr(openai_client.responses, "parse", None)
-    if parse_method is None:
-        raise RuntimeError(
-            "openai client does not support responses.parse; upgrade the openai package."
-        )
-    return parse_method(**kwargs)
+class PostReport(BaseModel):
+    """Final report entry persisted to disk."""
+
+    subreddit: str
+    title: str
+    url: str
+    created: str
+    score: int
+    num_comments: int
+    initial_assessment: InitialAssessment
+    automation_insight: AutomationInsight
 
 
-def _truncate(text: str, limit: int = 800) -> str:
-    """Trim long strings so prompts stay small."""
+T = TypeVar("T", bound=BaseModel)
+
+
+def _parse_as_model(
+    client: OpenAI, *, model: str, prompt: str, text_format: Type[T]
+) -> T:
+    response = client.responses.parse(
+        model=model,
+        input=[{"role": "user", "content": prompt}],
+        max_output_tokens=400,
+        text_format=text_format,
+    )
+    if isinstance(response, text_format):
+        return response
+
+    parsed_payload = getattr(response, "parsed", None)
+    if isinstance(parsed_payload, text_format):
+        return parsed_payload
+    if parsed_payload is not None:
+        return text_format.model_validate(parsed_payload)
+
+    output_parsed = getattr(response, "output_parsed", None)
+    if isinstance(output_parsed, text_format):
+        return output_parsed
+    if output_parsed is not None:
+        return text_format.model_validate(output_parsed)
+
+    output_items = getattr(response, "output", None)
+    if output_items is not None:
+        for item in output_items:
+            content_list = getattr(item, "content", None)
+            if content_list is None:
+                continue
+            for content in content_list:
+                parsed_value = getattr(content, "parsed", None)
+                if isinstance(parsed_value, text_format):
+                    return parsed_value
+                if parsed_value is not None:
+                    return text_format.model_validate(parsed_value)
+    if hasattr(response, "model_dump"):
+        dumped = response.model_dump()
+        if isinstance(dumped, dict):
+            try:
+                return text_format.model_validate(dumped)
+            except ValidationError:
+                pass
+
+    raise ValidationError(
+        [
+            {
+                "type": "model_parsing",
+                "loc": (text_format.__name__,),
+                "msg": "Unable to locate parsed content in OpenAI response.",
+                "input": response,
+            }
+        ],
+        model=text_format,
+    )
+
+
+def _truncate(text: str, limit: int) -> str:
     if len(text) <= limit:
         return text
     return f"{text[:limit]}..."
 
 
-def assess_automation_use_case(post: Dict[str, Any]) -> str:
-    """Use OpenAI to judge whether a post implies an automation opportunity."""
-    prompt = PROMPTS["initial_assessment"]
-    post_details = (
-        f"Subreddit: {post['subreddit']}\n"
-        f"Title: {post['title']}\n"
-        f"Score: {post['score']} | Comments: {post['num_comments']}\n"
-        f"Permalink: {post['url']}"
+def build_reddit_client() -> praw.Reddit:
+    return praw.Reddit(
+        client_id=_require_env("PRAW_CLIENT_ID"),
+        client_secret=_require_env("PRAW_CLIENT_SECRET"),
+        user_agent=_require_env("PRAW_USER_AGENT"),
     )
-    combined_input = f"{prompt}\n\n{post_details}"
-    try:
-        response = openai_client.responses.create(
-            model=OPENAI_MODEL,
-            input=[
-                {
-                    "role": "user",
-                    "content": combined_input,
-                }
-            ],
-            max_output_tokens=150,
-        )
-        content = response.output[0].content[0].text.strip()
-    except Exception as exc:
-        content = f"Assessment unavailable ({exc})"
-    return content
 
 
-def analyze_full_post_use_case(full_post: Dict[str, Any]) -> AutomationInsight:
-    """Take full submission + comments and look for automation potential."""
-    prompt = PROMPTS["deep_assessment"]
-    comment_snippets: List[str] = []
-    for comment in full_post.get("comments", [])[:5]:
-        snippet = _truncate(comment.get("body", ""), 240)
-        comment_snippets.append(f"- {snippet}")
-    comments_section = "\n".join(comment_snippets) or "No comments captured."
-    body = _truncate(full_post.get("selftext") or "", 1200)
-    combined_input = (
-        f"{prompt}\n\n"
-        f"Title: {full_post.get('title')}\n"
-        f"Body:\n{body or '[no body]'}\n\n"
-        f"Top Comments:\n{comments_section}"
-    )
-    try:
-        parsed = _responses_parse(
-            model=OPENAI_MODEL,
-            input=[{"role": "user", "content": combined_input}],
-            max_output_tokens=350,
-            text_format=AutomationInsight,
+def build_openai_client() -> Tuple[OpenAI, str]:
+    client = OpenAI(api_key=_require_env("OPENAI_API_KEY"))
+    if not hasattr(client.responses, "parse"):
+        raise RuntimeError(
+            "openai client does not support responses.parse; upgrade the package."
         )
-        if isinstance(parsed, AutomationInsight):
-            return parsed
-        parsed_payload = getattr(parsed, "parsed", parsed)
-        if isinstance(parsed_payload, AutomationInsight):
-            return parsed_payload
-        return AutomationInsight.model_validate(parsed_payload)
-    except ValidationError as exc:
-        return AutomationInsight(
-            automation_summary="Deep assessment failed to parse response.",
-            deep_analysis=f"Parsing error: {exc}",
-            automation_complexity="unknown",
-            required_tools=[],
-        )
-    except Exception as exc:  # OpenAI or network issue
-        return AutomationInsight(
-            automation_summary="Deep assessment unavailable.",
-            deep_analysis=f"OpenAI error: {exc}",
-            automation_complexity="unknown",
-            required_tools=[],
-        )
+    return client, DEFAULT_OPENAI_MODEL
 
 
-def fetch_full_post_with_praw(reddit_client, url_or_id, max_comments=5):
-    """
-    Returns a dict with the submission fields and a list of top comments.
-    - reddit_client: your praw.Reddit() instance
-    - url_or_id: either a full reddit URL or reddit id like 'abc123'
-    - max_comments: max number of comments to return (None for all)
-    """
-    # create submission either by id or url
+def summarize_post(post: praw.models.Submission) -> Dict[str, Any]:
+    return {
+        "subreddit": str(post.subreddit),
+        "title": post.title,
+        "url": f"https://www.reddit.com{post.permalink}",
+        "created_utc": post.created_utc,
+        "score": post.score,
+        "num_comments": post.num_comments,
+    }
+
+
+def search_posts(
+    reddit_client: praw.Reddit,
+    *,
+    subreddits: Sequence[str],
+    query: str,
+    time_filter: str,
+    limit: int,
+) -> Iterator[Dict[str, Any]]:
+    for subreddit_name in subreddits:
+        subreddit = reddit_client.subreddit(subreddit_name)
+        for submission in subreddit.search(
+            query, sort="new", time_filter=time_filter, limit=limit
+        ):
+            yield summarize_post(submission)
+
+
+def fetch_full_post(
+    reddit_client: praw.Reddit, url_or_id: str, *, max_comments: int
+) -> Dict[str, Any]:
     if url_or_id.startswith("http"):
         submission = reddit_client.submission(url=url_or_id)
     else:
         submission = reddit_client.submission(id=url_or_id)
 
-    # fetch main fields
     post = {
         "id": submission.id,
         "subreddit": str(submission.subreddit),
         "title": submission.title,
-        "selftext": submission.selftext,        # full post body for text posts
+        "selftext": submission.selftext,
         "author": str(submission.author) if submission.author else None,
         "created_utc": submission.created_utc,
         "score": submission.score,
         "url": submission.url,
         "is_self": submission.is_self,
         "num_comments": submission.num_comments,
-        "media": submission.media,              # may be None or a dict for media posts
+        "media": submission.media,
     }
 
-    # load comments: be careful: replace_more(limit=None) returns ALL comments (can be heavy)
-    submission.comments.replace_more(limit=0)  # expand top-level comments only (faster)
+    submission.comments.replace_more(limit=0)
     comments = []
-    for i, c in enumerate(submission.comments.list()):
-        if max_comments is not None and i >= max_comments:
+    for index, comment in enumerate(submission.comments.list()):
+        if max_comments >= 0 and index >= max_comments:
             break
-        comments.append({
-            "id": c.id,
-            "author": str(c.author) if c.author else None,
-            "body": c.body,
-            "created_utc": c.created_utc,
-            "score": c.score,
-            "parent_id": c.parent_id,
-        })
+        comments.append(
+            {
+                "id": comment.id,
+                "author": str(comment.author) if comment.author else None,
+                "body": comment.body,
+                "created_utc": comment.created_utc,
+                "score": comment.score,
+                "parent_id": comment.parent_id,
+            }
+        )
 
     post["comments"] = comments
     return post
 
 
-def write_report(report_rows: List[Dict[str, Any]]) -> None:
-    """Persist report incrementally so each assessment is saved as it completes."""
-    REPORT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    report_payload = {
-        "generated_at": RUN_STARTED_AT,
-        "query": query,
-        "time_filter": time_filter,
-        "total_posts": len(report_rows),
-        "posts": report_rows,
-    }
-    with REPORT_PATH.open("w", encoding="utf-8") as fp:
-        json.dump(report_payload, fp, indent=2)
-
-# subs = ["smallbusiness","Entrepreneur","AI_Agents","marketing","sales","automation"]
-subs = ["smallbusiness","Entrepreneur"]
-query = '(agent OR "ai agent" OR agentic OR automation) (small business OR smb OR entrepreneur)'
-time_filter = "month"  # day|week|month|year|all
-REPORT_PATH = Path("data/report.json")
-RUN_STARTED_AT = datetime.now(timezone.utc).isoformat()
-
-results = []
-for sub in subs:
-    subreddit = reddit.subreddit(sub)
-    for post in subreddit.search(query, sort="new", time_filter=time_filter, limit=50):
-        results.append({
-            "subreddit": sub,
-            "title": post.title,
-            "url": f"https://www.reddit.com{post.permalink}",
-            "created_utc": post.created_utc,
-            "score": post.score,
-            "num_comments": post.num_comments
-        })
+@dataclass
+class AnalyzerDependencies:
+    reddit: praw.Reddit
+    openai: OpenAI
+    openai_model: str
+    prompts: Dict[str, str]
 
 
-print(f"Found {len(results)} posts")
-report_rows: List[Dict[str, Any]] = []
-for r in results:
-    created = datetime.fromtimestamp(
-        r["created_utc"], tz=timezone.utc
-    ).strftime('%Y-%m-%d %H:%M:%S')
-    automation_callout = assess_automation_use_case(r)
-    insight = AutomationInsight(
-        automation_summary=automation_callout,
-        deep_analysis="Not assessed (initial review not affirmative)",
-        automation_complexity="unknown",
-        required_tools=[],
-    )
-    if automation_callout.upper().startswith("YES"):
+class AutomationAnalyzer:
+    def __init__(self, deps: AnalyzerDependencies) -> None:
+        self._reddit = deps.reddit
+        self._openai = deps.openai
+        self._model = deps.openai_model
+        self._prompts = deps.prompts
+
+    def initial_assessment(self, post_summary: Dict[str, Any]) -> InitialAssessment:
+        post_details = (
+            f"Subreddit: {post_summary['subreddit']}\n"
+            f"Title: {post_summary['title']}\n"
+            f"Score: {post_summary['score']}\n"
+            f"Comments: {post_summary['num_comments']}\n"
+            f"Permalink: {post_summary['url']}"
+        )
+        prompt = (
+            f"{self._prompts['initial_assessment']}\n\n"
+            "Return structured data with fields is_automation (boolean) and "
+            "rationale (short sentence)."
+            f"\n\nPost Details:\n{post_details}"
+        )
         try:
-            full_post = fetch_full_post_with_praw(reddit, r["url"])
-            insight = analyze_full_post_use_case(full_post)
+            return _parse_as_model(
+                self._openai,
+                model=self._model,
+                prompt=prompt,
+                text_format=InitialAssessment,
+            )
+        except ValidationError as exc:
+            return InitialAssessment(
+                is_automation=False,
+                rationale=f"Parsing error: {exc}",
+            )
+        except Exception as exc:  # network or OpenAI error
+            return InitialAssessment(
+                is_automation=False,
+                rationale=f"Assessment unavailable ({exc})",
+            )
+
+    def deep_assessment(self, full_post: Dict[str, Any]) -> AutomationInsight:
+        comments = full_post.get("comments", [])[:5]
+        comment_snippets = [
+            f"- {_truncate(comment.get('body', ''), 240)}" for comment in comments
+        ]
+        comments_block = "\n".join(comment_snippets) or "No comments captured."
+        body = _truncate(full_post.get("selftext") or "", 1200)
+        prompt = (
+            f"{self._prompts['deep_assessment']}\n\n"
+            "Return structured data with fields automation_summary (one "
+            "sentence), deep_analysis (two or three sentences), "
+            "automation_complexity (one of: low, medium, high), and "
+            "required_tools (list of tools or APIs)."
+            f"\n\nTitle: {full_post.get('title')}\n"
+            f"Body:\n{body or '[no body]'}\n\n"
+            f"Top Comments:\n{comments_block}"
+        )
+        try:
+            return _parse_as_model(
+                self._openai,
+                model=self._model,
+                prompt=prompt,
+                text_format=AutomationInsight,
+            )
+        except ValidationError as exc:
+            return AutomationInsight(
+                automation_summary="Deep assessment failed to parse response.",
+                deep_analysis=f"Parsing error: {exc}",
+                automation_complexity="unknown",
+                required_tools=[],
+            )
         except Exception as exc:
-            insight = AutomationInsight(
-                automation_summary=automation_callout,
-                deep_analysis=f"Deep assessment unavailable ({exc})",
+            return AutomationInsight(
+                automation_summary="Deep assessment unavailable.",
+                deep_analysis=f"OpenAI error: {exc}",
                 automation_complexity="unknown",
                 required_tools=[],
             )
 
+    def analyze_post(
+        self, post_summary: Dict[str, Any], *, comment_limit: int
+    ) -> PostReport:
+        initial = self.initial_assessment(post_summary)
+        if initial.is_automation:
+            try:
+                full_post = fetch_full_post(
+                    self._reddit,
+                    post_summary["url"],
+                    max_comments=comment_limit,
+                )
+                deep = self.deep_assessment(full_post)
+            except Exception as exc:
+                deep = AutomationInsight(
+                    automation_summary=initial.rationale,
+                    deep_analysis=f"Deep assessment unavailable ({exc})",
+                    automation_complexity="unknown",
+                    required_tools=[],
+                )
+        else:
+            deep = AutomationInsight(
+                automation_summary=initial.rationale,
+                deep_analysis="Not assessed (initial review not affirmative).",
+                automation_complexity="unknown",
+                required_tools=[],
+            )
+
+        created = datetime.fromtimestamp(
+            post_summary["created_utc"], tz=timezone.utc
+        ).strftime("%Y-%m-%d %H:%M:%S")
+
+        return PostReport(
+            subreddit=post_summary["subreddit"],
+            title=post_summary["title"],
+            url=post_summary["url"],
+            created=created,
+            score=post_summary["score"],
+            num_comments=post_summary["num_comments"],
+            initial_assessment=initial,
+            automation_insight=deep,
+        )
+
+
+def write_report(
+    path: Path,
+    *,
+    generated_at: str,
+    query: str,
+    time_filter: str,
+    posts: Sequence[PostReport],
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "generated_at": generated_at,
+        "query": query,
+        "time_filter": time_filter,
+        "total_posts": len(posts),
+    }
+    payload["posts"] = [post.model_dump() for post in posts]
+    with path.open("w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2)
+
+
+def _print_report_entry(report: PostReport) -> None:
+    insight = report.automation_insight
+    initial = report.initial_assessment
+    tools = ", ".join(insight.required_tools) or "n/a"
     print(
-        f"[{r['subreddit']}] {created} | {r['score']} | {r['num_comments']} | "
-        f"{r['title']} | {r['url']} | Automation: {insight.automation_summary}"
+        f"[{report.subreddit}] {report.created} | {report.score} | "
+        f"{report.num_comments} | {report.title} | {report.url}"
     )
-    tools_display = ", ".join(insight.required_tools) if insight.required_tools else "n/a"
     print(
-        f"    Deep dive: {insight.deep_analysis} "
-        f"(Complexity: {insight.automation_complexity}, Tools: {tools_display})"
+        f"    Initial Assessment: {'YES' if initial.is_automation else 'NO'} - "
+        f"{initial.rationale}"
     )
-    report_rows.append({
-        **r,
-        "created": created,
-        "automation_summary": insight.automation_summary,
-        "deep_analysis": insight.deep_analysis,
-        "automation_complexity": insight.automation_complexity,
-        "required_tools": insight.required_tools,
-    })
-    write_report(report_rows)
-    print(f"Report updated ({len(report_rows)} entries) -> {REPORT_PATH}")
+    print(
+        f"    Deep Dive: {insight.deep_analysis} "
+        f"(Summary: {insight.automation_summary}; "
+        f"Complexity: {insight.automation_complexity}; Tools: {tools})"
+    )
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--subs",
+        nargs="+",
+        default=["smallbusiness", "Entrepreneur"],
+        help="Subreddits to search.",
+    )
+    parser.add_argument(
+        "--query",
+        default='(agent OR "ai agent" OR agentic OR automation) '
+        "(small business OR smb OR entrepreneur)",
+        help="Search query to submit to Reddit.",
+    )
+    parser.add_argument(
+        "--time-filter",
+        default="month",
+        choices=["day", "week", "month", "year", "all"],
+        help="Reddit time filter for the search.",
+    )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=50,
+        help="Maximum posts to retrieve per subreddit.",
+    )
+    parser.add_argument(
+        "--comments-limit",
+        type=int,
+        default=5,
+        help="Maximum comments to retrieve during deep analysis (-1 for all).",
+    )
+    parser.add_argument(
+        "--report-path",
+        type=Path,
+        default=Path("data/report.json"),
+        help="Destination for the JSON report.",
+    )
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+    reddit_client = build_reddit_client()
+    openai_client, model_name = build_openai_client()
+    deps = AnalyzerDependencies(
+        reddit=reddit_client,
+        openai=openai_client,
+        openai_model=model_name,
+        prompts=PROMPTS,
+    )
+    analyzer = AutomationAnalyzer(deps)
+
+    generated_at = datetime.now(timezone.utc).isoformat()
+    results: List[PostReport] = []
+    print("Streaming Reddit results and updating report incrementally...")
+    for post_summary in search_posts(
+        reddit_client,
+        subreddits=args.subs,
+        query=args.query,
+        time_filter=args.time_filter,
+        limit=args.limit,
+    ):
+        report = analyzer.analyze_post(
+            post_summary, comment_limit=args.comments_limit
+        )
+        results.append(report)
+        _print_report_entry(report)
+        write_report(
+            args.report_path,
+            generated_at=generated_at,
+            query=args.query,
+            time_filter=args.time_filter,
+            posts=results,
+        )
+        print(
+            f"Report updated ({len(results)} entries) -> {args.report_path}"
+        )
+
+    print(f"Processed {len(results)} posts total.")
+    print(f"Final report available at {args.report_path}")
+
+
+if __name__ == "__main__":
+    main()
