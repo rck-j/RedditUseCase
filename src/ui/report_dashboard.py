@@ -45,7 +45,7 @@ class PostReport(BasePostReport):
 
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
-DATA_PATH = ROOT_DIR / "data" / "report3.json"
+DATA_PATH = ROOT_DIR / "data" / "report.json"
 TEMPLATES = Jinja2Templates(directory=str(ROOT_DIR / "templates"))
 
 app = FastAPI(title="Reddit Automation Report Dashboard")
